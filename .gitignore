@@ -1,0 +1,4 @@
+# Archivos específicos
+config.py
+mqtt_positions.log
+.env

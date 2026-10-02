@@ -1,5 +1,6 @@
 import json
 import time
+import logging
 from datetime import datetime, UTC
 
 import paho.mqtt.client as mqtt
@@ -56,30 +57,71 @@ PAQUETES_PROCESADOS = {}
 
 
 # ==========================================
+# LOGGING
+# ==========================================
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+formatter = logging.Formatter(
+    "%(asctime)s | %(levelname)s | %(message)s"
+)
+
+file_handler = logging.FileHandler(
+    "mqtt_positions.log",
+    encoding="utf-8",
+)
+file_handler.setFormatter(formatter)
+
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(formatter)
+
+logger.addHandler(file_handler)
+logger.addHandler(console_handler)
+
+# Añade una cabecera al log para diferenciar cada nueva ejecución.
+logger.info("")
+logger.info("=" * 60)
+logger.info("NUEVA EJECUCIÓN MESHTASTIC-EMERCARTO")
+logger.info("=" * 60)
+
+
+# ==========================================
 # CONEXIÓN SOAP
 # ==========================================
 
-# Crea una sesión HTTP que será utilizada por el cliente SOAP.
-session = Session()
+try:
+    # Crea una sesión HTTP que será utilizada por el cliente SOAP.
+    session = Session()
 
-# Configura la autenticación HTTP básica necesaria para acceder
-# al servicio SOAP.
-session.auth = HTTPBasicAuth(
-    USUARIO_EMERCARTO,
-    PASSWORD_EMERCARTO
-)
+    # Configura la autenticación HTTP básica necesaria para acceder
+    # al servicio SOAP.
+    session.auth = HTTPBasicAuth(
+        USUARIO_EMERCARTO,
+        PASSWORD_EMERCARTO
+    )
 
-# Crea el transporte que utilizará Zeep para realizar las peticiones
-# utilizando la sesión HTTP configurada anteriormente.
-transport = Transport(session=session)
+    # Crea el transporte que utilizará Zeep para realizar las peticiones
+    # utilizando la sesión HTTP configurada anteriormente.
+    transport = Transport(session=session)
 
-# Crea el cliente SOAP utilizando el WSDL y el transporte configurado.
-soap_client = Client(
-    WSDL_URL,
-    transport=transport
-)
+    # Crea el cliente SOAP utilizando el WSDL y el transporte configurado.
+    soap_client = Client(
+        WSDL_URL,
+        transport=transport
+    )
 
-print("SOAP conectado")
+    logger.info(
+        "SOAP conectado"
+    )
+
+except Exception:
+    # Si falla la creación del cliente SOAP se registra como error
+    # junto con el traceback de la excepción.
+    logger.exception(
+        "Error al configurar la conexión SOAP"
+    )
+    raise
 
 
 # ==========================================
@@ -125,7 +167,7 @@ def crear_trama(mensaje, identificador):
         "",              # Evento
         "",              # Orientación
         "",              # Temperatura
-        "0",            # Batería
+        "0",             # Batería
         "",              # Cobertura GPRS
         "",              # Error horizontal
         "",              # Error vertical
@@ -159,25 +201,32 @@ def on_message(client, userdata, msg):
     """
 
     try:
-
         # Intenta decodificar el payload MQTT y convertirlo desde JSON.
         # Si el contenido no puede interpretarse correctamente, se descarta.
         try:
-            mensaje = json.loads(msg.payload.decode("utf-8"))
+            mensaje = json.loads(
+                msg.payload.decode("utf-8")
+            )
+
         except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning(
+                "Mensaje MQTT descartado: el payload no contiene un JSON válido"
+            )
             return
 
         # Solo se procesan mensajes correspondientes a posiciones.
         if mensaje.get("type") != "position":
-            print(
-                "\nMensaje no es de tipo 'position':",
+            logger.warning(
+                "Mensaje MQTT ignorado: type=%r",
                 mensaje.get("type")
             )
             return
 
         # Busca el identificador correspondiente al nodo que ha generado
         # la posición.
-        nodo = NODOS.get(mensaje["from"])
+        nodo = NODOS.get(
+            mensaje["from"]
+        )
 
         # El campo sender llega representado en hexadecimal.
         # Se elimina el carácter inicial '!' y se convierte a decimal
@@ -189,8 +238,8 @@ def on_message(client, userdata, msg):
 
         # Si el nodo origen no está registrado, la posición se descarta.
         if nodo is None:
-            print(
-                "\nNodo desconocido:",
+            logger.warning(
+                "Nodo desconocido: from=%s",
                 mensaje["from"]
             )
             return
@@ -198,21 +247,21 @@ def on_message(client, userdata, msg):
         # Descarta posiciones que se encuentren fuera de la ventana
         # temporal permitida.
         if not posicion_valida(mensaje):
-            print(
-                "\nPosicion descartada por antigüedad:",
-                f"from={mensaje['from']}",
-                f"id={mensaje['id']}"
+            logger.warning(
+                "Posición descartada por antigüedad: from=%s id=%s",
+                mensaje["from"],
+                mensaje["id"]
             )
             return
 
         # Evita volver a enviar una posición que ya haya sido
         # procesada correctamente.
         if esta_procesado(mensaje):
-            print(
-                "\nPosición duplicada ignorada:",
-                f"from={mensaje['from']}",
-                f"id={mensaje['id']}",
-                "desde nodo",
+            logger.info(
+                "Posición duplicada ignorada: "
+                "from=%s id=%s desde nodo=%s",
+                mensaje["from"],
+                mensaje["id"],
                 NODOS.get(sender_decimal)
             )
             return
@@ -224,15 +273,18 @@ def on_message(client, userdata, msg):
             nodo
         )
 
-        print(
-            "\nPosicion recibida desde nodo",
-            NODOS.get(sender_decimal)
-        )
-        print(
-            "Paquete con ID:",
+        logger.info("=" * 60)
+        logger.info(
+            "Posición recibida desde nodo=%s from=%s id=%s",
+            NODOS.get(sender_decimal),
+            mensaje["from"],
             mensaje["id"]
         )
-        print(trama)
+
+        logger.info(
+            "Trama generada: %s",
+            trama
+        )
 
         # Envía la trama al servicio SOAP mediante CargarPosiciones().
         respuesta = soap_client.service.CargarPosiciones(
@@ -240,8 +292,8 @@ def on_message(client, userdata, msg):
             "MESHTASTIC"
         )
 
-        print(
-            "Respuesta:",
+        logger.info(
+            "Respuesta SOAP: %r",
             respuesta
         )
 
@@ -249,33 +301,45 @@ def on_message(client, userdata, msg):
         # del servicio SOAP indica que la operación ha sido correcta.
         if respuesta_correcta(respuesta):
             marcar_procesado(mensaje)
-        else:
-            print(
-                "La posición no se marca como procesada:",
-                f"from={mensaje['from']}",
-                f"id={mensaje['id']}"
+
+            logger.info(
+                "Posición procesada correctamente: from=%s id=%s",
+                mensaje["from"],
+                mensaje["id"]
             )
+            logger.info("=" * 60)
+
+        else:
+            logger.warning(
+                "Respuesta SOAP no válida. "
+                "La posición no se marca como procesada: "
+                "from=%s id=%s respuesta=%r",
+                mensaje["from"],
+                mensaje["id"],
+                respuesta
+            )
+            logger.info("=" * 60)
 
     # Captura errores no controlados durante el procesamiento del mensaje
     # para evitar que el consumidor MQTT deje de funcionar.
-    except Exception as e:
-        print(
-            "ERROR:",
-            e
+    except Exception:
+        # logger.exception registra el error y también el traceback.
+        logger.exception(
+            "Error procesando mensaje MQTT"
         )
 
     # Código auxiliar que puede habilitarse para mostrar directamente
     # los mensajes recibidos durante tareas de depuración.
     #
-    # print("\n--- MENSAJE RECIBIDO ---")
-    # print("TOPIC:", msg.topic)
+    # logger.info("--- MENSAJE RECIBIDO ---")
+    # logger.info("TOPIC: %s", msg.topic)
     #
     # try:
-    #     print(msg.payload.decode())
-    # except:
-    #     print(msg.payload)
+    #     logger.info("PAYLOAD: %s", msg.payload.decode())
+    # except UnicodeDecodeError:
+    #     logger.info("PAYLOAD: %r", msg.payload)
     #
-    # print("------------------------")
+    # logger.info("------------------------")
 
 
 # ==========================================
@@ -360,12 +424,12 @@ def posicion_valida(mensaje):
     # Código auxiliar para comprobar los valores temporales durante
     # las tareas de depuración.
     #
-    # print(
-    #     "DEBUG TIEMPO:",
-    #     f"timestamp={timestamp}",
-    #     f"ahora={time.time()}",
-    #     f"edad={edad}",
-    #     f"edad_min={edad / 60}"
+    # logger.info(
+    #     "DEBUG TIEMPO: timestamp=%s ahora=%s edad=%s edad_min=%s",
+    #     timestamp,
+    #     time.time(),
+    #     edad,
+    #     edad / 60
     # )
 
     return (
@@ -397,32 +461,44 @@ def respuesta_correcta(respuesta):
 
 def on_connect(client, userdata, flags, rc):
     """
-    Callback ejecutado cuando el cliente establece la conexión MQTT.
+    Callback ejecutado cuando finaliza un intento de conexión MQTT.
 
-    Una vez conectado, el cliente se suscribe al topic configurado
-    para empezar a recibir las posiciones.
+    Si la conexión se establece correctamente, el cliente se suscribe
+    al topic configurado para comenzar a recibir posiciones.
 
-    :param client: Cliente MQTT que ha establecido la conexión.
+    Si el broker devuelve un código de error, se registra como ERROR.
+
+    :param client: Cliente MQTT que ha realizado el intento de conexión.
     :param userdata: Datos adicionales asociados al cliente.
     :param flags: Información proporcionada por la conexión MQTT.
     :param rc: Código de resultado de la conexión.
     """
 
-    print(
-        "\nConectado MQTT:",
-        rc
-    )
+    if rc == 0:
+        logger.info(
+            "Conectado correctamente al servidor MQTT"
+        )
 
-    # Suscribe el cliente al topic donde se reciben las posiciones.
-    client.subscribe(
-        MQTT_TOPIC
-    )
+        # Suscribe el cliente al topic donde se reciben las posiciones.
+        client.subscribe(
+            MQTT_TOPIC
+        )
 
-    print(
-        "Suscrito a:",
-        MQTT_TOPIC
-    )
+        logger.info(
+            "Suscrito a: %s",
+            MQTT_TOPIC
+        )
 
+    else:
+        logger.error(
+            "Error al conectar con el servidor MQTT. Código: %s",
+            rc
+        )
+
+
+# ==========================================
+# CLIENTE MQTT
+# ==========================================
 
 # Crea el cliente que mantendrá la conexión con el broker MQTT.
 mqtt_client = mqtt.Client()
@@ -431,17 +507,24 @@ mqtt_client = mqtt.Client()
 # la comprobación de la configuración.
 #
 # La contraseña no se muestra para evitar exponerla en los logs.
-print(
-    "Usuario MQTT:",
-    repr(USUARIO_MQTT)
+logger.info(
+    "Usuario MQTT: %r",
+    USUARIO_MQTT
 )
-print(
-    "Host MQTT:",
-    repr(MQTT_HOST)
+
+logger.info(
+    "Host MQTT: %r",
+    MQTT_HOST
 )
-print(
-    "Puerto MQTT:",
+
+logger.info(
+    "Puerto MQTT: %s",
     MQTT_PORT
+)
+
+logger.info(
+    "Topic MQTT: %s",
+    MQTT_TOPIC
 )
 
 # Configura las credenciales utilizadas para autenticarse
@@ -463,21 +546,54 @@ mqtt_client.tls_set()
 # el diagnóstico de problemas de conexión.
 mqtt_client.enable_logger()
 
-# Intenta establecer la conexión inicial con el broker MQTT
-# utilizando el host y puerto definidos en config.py.
-resultado = mqtt_client.connect(
-    MQTT_HOST,
-    MQTT_PORT
-)
 
-print("Escuchando MQTT...")
-print(
-    "Topic:",
-    MQTT_TOPIC
-)
+# ==========================================
+# INICIO DEL CLIENTE MQTT
+# ==========================================
 
-# Mantiene activo el bucle de red de MQTT.
-#
-# Desde este punto Paho procesa las comunicaciones con el broker
-# y ejecuta los callbacks on_connect() y on_message() cuando corresponde.
-mqtt_client.loop_forever()
+try:
+    # Intenta establecer la conexión inicial con el broker MQTT
+    # utilizando el host y puerto definidos en config.py.
+    mqtt_client.connect(
+        MQTT_HOST,
+        MQTT_PORT
+    )
+
+    logger.info(
+        "Escuchando MQTT..."
+    )
+
+    logger.info(
+        "Topic: %s",
+        MQTT_TOPIC
+    )
+
+    # Mantiene activo el bucle de red de MQTT.
+    #
+    # Desde este punto Paho procesa las comunicaciones con el broker
+    # y ejecuta los callbacks on_connect() y on_message() cuando corresponde.
+    mqtt_client.loop_forever()
+
+except KeyboardInterrupt:
+    # Ctrl+C es una parada voluntaria y no se considera un error.
+    logger.info(
+        "Servicio detenido manualmente"
+    )
+
+except Exception:
+    # Registra cualquier error no controlado producido durante
+    # la ejecución del cliente MQTT junto con su traceback.
+    logger.exception(
+        "Error general en la conexión o ejecución del cliente MQTT"
+    )
+
+finally:
+    # Deja constancia del final de la ejecución actual.
+    logger.info("=" * 60)
+    logger.info(
+        "Fin de la ejecución MESHTASTIC-EMERCARTO"
+    )
+
+    logger.info(
+        "=" * 60
+    )
