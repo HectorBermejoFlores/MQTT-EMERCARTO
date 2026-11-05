@@ -1,7 +1,10 @@
 import json
 import time
 import logging
+import csv
 from datetime import datetime, UTC
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import paho.mqtt.client as mqtt
 
@@ -31,6 +34,10 @@ from config import (
     MARGEN_FUTURO_SEGUNDOS,
 )
 
+ZONA_LOCAL = ZoneInfo("Europe/Madrid")
+INICIO_EJECUCION = datetime.now(ZONA_LOCAL)
+ARCHIVO_CSV = None
+
 
 # ==========================================
 # NODOS Y PAQUETES PROCESADOS
@@ -39,10 +46,10 @@ from config import (
 # Diccionario que relaciona el identificador numérico de cada nodo
 # Meshtastic con el identificador utilizado en la trama enviada por SOAP.
 NODOS = {
-    1002466242: "TAG1",
-    1187009625: "TAG2",
-    708490749: "TAG3",
-    3897471794: "TAG4",
+    1223491063: "TAG1",
+    2255708469: "TAG2",
+    666757308: "TAG3",
+    3954070756: "TAG4",
     1970286148: "GATEWAY"
 }
 
@@ -141,19 +148,49 @@ def crear_trama(mensaje, identificador):
     :return: Trama preparada para ser enviada al servicio SOAP.
     """
 
+    payload = mensaje.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("falta el objeto 'payload'")
+
+    campos_requeridos = ("latitude_i", "longitude_i", "receivedTime")
+    campos_ausentes = [
+        campo
+        for campo in campos_requeridos
+        if payload.get(campo) is None
+    ]
+    if campos_ausentes:
+        raise ValueError(
+            "faltan campos obligatorios en payload: "
+            + ", ".join(campos_ausentes)
+        )
+
+    latitud = payload["latitude_i"]
+    longitud = payload["longitude_i"]
+    timestamp = payload["receivedTime"]
+    for nombre, valor in (
+        ("latitude_i", latitud),
+        ("longitude_i", longitud),
+        ("receivedTime", timestamp),
+    ):
+        if isinstance(valor, bool) or not isinstance(valor, (int, float)):
+            raise ValueError(
+                f"el campo '{nombre}' debe ser numérico"
+            )
+
     # Meshtastic representa latitud y longitud multiplicadas por 10^7.
-    # Se dividen para recuperar sus valores en grados.
-    lat = mensaje["payload"]["latitude_i"] / 10000000
-    lon = mensaje["payload"]["longitude_i"] / 10000000
+    lat = latitud / 10000000
+    lon = longitud / 10000000
 
-    # Convierte el timestamp recibido a la representación de fecha UTC
-    # utilizada en la trama enviada al servicio SOAP.
-    fecha = datetime.fromtimestamp(
-        mensaje["payload"]["time"],
-        UTC
-    ).strftime("%Y%m%d%H%M%S")
+    try:
+        fecha = datetime.fromtimestamp(
+            timestamp,
+            UTC
+        ).strftime("%Y%m%d%H%M%S")
+    except (OverflowError, OSError, ValueError) as error:
+        raise ValueError(
+            "el campo 'receivedTime' no contiene una fecha válida"
+        ) from error
 
-    # Construye los campos que componen la trama.
     campos = [
         identificador,   # Identificador (IMEI)
         str(lat),        # Latitud
@@ -177,7 +214,6 @@ def crear_trama(mensaje, identificador):
         ""               # Datos adjuntos
     ]
 
-    # Une todos los campos utilizando '*' como separador.
     return "*".join(campos)
 
 
@@ -244,12 +280,24 @@ def on_message(client, userdata, msg):
             )
             return
 
+        try:
+            trama = crear_trama(
+                mensaje,
+                nodo
+            )
+        except ValueError as error:
+            logger.error(
+                "Paquete descartado: no se puede generar la trama: %s",
+                error
+            )
+            return
+
         # Descarta posiciones que se encuentren fuera de la ventana
         # temporal permitida.
         if not posicion_valida(mensaje):
             logger.warning(
                 "Posición descartada por antigüedad: from=%s id=%s",
-                mensaje["from"],
+                NODOS.get(mensaje["from"]),
                 mensaje["id"]
             )
             return
@@ -260,25 +308,87 @@ def on_message(client, userdata, msg):
             logger.info(
                 "Posición duplicada ignorada: "
                 "from=%s id=%s desde nodo=%s",
-                mensaje["from"],
+                NODOS.get(mensaje["from"]),
                 mensaje["id"],
                 NODOS.get(sender_decimal)
             )
             return
 
-        # Convierte la posición recibida al formato requerido
-        # por el servicio SOAP.
-        trama = crear_trama(
-            mensaje,
-            nodo
-        )
-
         logger.info("=" * 60)
         logger.info(
             "Posición recibida desde nodo=%s from=%s id=%s",
             NODOS.get(sender_decimal),
-            mensaje["from"],
+            NODOS.get(mensaje["from"]),
             mensaje["id"]
+        )
+
+        payload = mensaje["payload"]
+        received = payload.get("receivedTime")
+        sent = payload.get("sentTime")
+
+        received_hms = (
+            datetime.fromtimestamp(received, ZONA_LOCAL).strftime("%H:%M:%S")
+            if received is not None else "no disponible"
+        )
+        sent_hms = (
+            datetime.fromtimestamp(sent, ZONA_LOCAL).strftime("%H:%M:%S")
+            if sent is not None else "no disponible"
+        )
+
+        logger.info(
+            "Tiempo de recepción: %s | tiempo de envío: %s",
+            received_hms,
+            sent_hms
+        )
+
+        ruta = mensaje.get("route")
+        ruta_formateada = ""
+        if ruta is None or ruta == []:
+            logger.info(
+                "Ruta del paquete: (no disponible)"
+            )
+        elif (
+            not isinstance(ruta, list)
+            or len(ruta) > 8
+            or any(type(hop) is not int for hop in ruta)
+        ):
+            logger.warning(
+                "Ruta del paquete no válida: %r",
+                ruta
+            )
+        else:
+            ruta_formateada = " --> ".join(
+                NODOS.get(hop, str(hop))
+                for hop in ruta
+            )
+            logger.info(
+                "Ruta del paquete: %s",
+                ruta_formateada
+            )
+
+        with ARCHIVO_CSV.open(
+            "a",
+            newline="",
+            encoding="utf-8"
+        ) as archivo:
+            escritor = csv.writer(archivo)
+            escritor.writerow([
+                nodo,
+                NODOS.get(sender_decimal, str(sender_decimal)),
+                mensaje["payload"]["latitude_i"] / 10000000,
+                mensaje["payload"]["longitude_i"] / 10000000,
+                mensaje["id"],
+                ruta_formateada if ruta else "",
+                payload.get("SNR"),
+                payload.get("RSSI"),
+                sent_hms,
+                received_hms,
+            ])
+
+        logger.info(
+            "SNR: %s, RSSI: %s",
+            mensaje["payload"].get("SNR"),
+            mensaje["payload"].get("RSSI")
         )
 
         logger.info(
@@ -304,7 +414,7 @@ def on_message(client, userdata, msg):
 
             logger.info(
                 "Posición procesada correctamente: from=%s id=%s",
-                mensaje["from"],
+                NODOS.get(mensaje["from"], str(mensaje["from"])),
                 mensaje["id"]
             )
             logger.info("=" * 60)
@@ -314,7 +424,7 @@ def on_message(client, userdata, msg):
                 "Respuesta SOAP no válida. "
                 "La posición no se marca como procesada: "
                 "from=%s id=%s respuesta=%r",
-                mensaje["from"],
+                NODOS.get(mensaje["from"], str(mensaje["from"])),
                 mensaje["id"],
                 respuesta
             )
@@ -416,7 +526,7 @@ def posicion_valida(mensaje):
     :return: True si la posición es válida, False en caso contrario.
     """
 
-    timestamp = mensaje["payload"]["time"]
+    timestamp = mensaje["payload"]["receivedTime"]
 
     # Calcula la antigüedad de la posición en segundos.
     edad = time.time() - timestamp
@@ -459,7 +569,7 @@ def respuesta_correcta(respuesta):
 # MQTT
 # ==========================================
 
-def on_connect(client, userdata, flags, rc):
+def on_connect(client, userdata, flags, reason_code, properties):
     """
     Callback ejecutado cuando finaliza un intento de conexión MQTT.
 
@@ -471,13 +581,48 @@ def on_connect(client, userdata, flags, rc):
     :param client: Cliente MQTT que ha realizado el intento de conexión.
     :param userdata: Datos adicionales asociados al cliente.
     :param flags: Información proporcionada por la conexión MQTT.
-    :param rc: Código de resultado de la conexión.
+    :param reason_code: Código de resultado de la conexión.
+    :param properties: Propiedades MQTT asociadas a la conexión.
     """
 
-    if rc == 0:
+    global ARCHIVO_CSV
+
+    if reason_code == 0:
         logger.info(
             "Conectado correctamente al servidor MQTT"
         )
+
+        if ARCHIVO_CSV is None:
+            carpeta_csv = Path("csv")
+            carpeta_csv.mkdir(parents=True, exist_ok=True)
+            nombre_csv = (
+                f"{INICIO_EJECUCION.strftime('%d-%m-%Y_%H-%M-%S-%f')}.csv"
+            )
+            ARCHIVO_CSV = carpeta_csv / nombre_csv
+
+            with ARCHIVO_CSV.open(
+                "w",
+                newline="",
+                encoding="utf-8"
+            ) as archivo:
+                escritor = csv.writer(archivo)
+                escritor.writerow([
+                    "from",
+                    "sender",
+                    "latitud",
+                    "longitud",
+                    "id",
+                    "ruta",
+                    "SNR",
+                    "RSSI",
+                    "hora_creación",
+                    "hora_llegada",
+                ])
+
+            logger.info(
+                "Archivo CSV creado: %s",
+                ARCHIVO_CSV
+            )
 
         # Suscribe el cliente al topic donde se reciben las posiciones.
         client.subscribe(
@@ -492,7 +637,7 @@ def on_connect(client, userdata, flags, rc):
     else:
         logger.error(
             "Error al conectar con el servidor MQTT. Código: %s",
-            rc
+            reason_code
         )
 
 
@@ -501,7 +646,9 @@ def on_connect(client, userdata, flags, rc):
 # ==========================================
 
 # Crea el cliente que mantendrá la conexión con el broker MQTT.
-mqtt_client = mqtt.Client()
+mqtt_client = mqtt.Client(
+    callback_api_version=mqtt.CallbackAPIVersion.VERSION2
+)
 
 # Muestra los principales datos de conexión para facilitar
 # la comprobación de la configuración.

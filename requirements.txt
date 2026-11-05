@@ -1,3 +1,4 @@
 zeep
 requests
 paho-mqtt
+tzdata
