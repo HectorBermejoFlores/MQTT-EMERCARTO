@@ -31,14 +31,12 @@ python -m pip install -r requirements.txt
 |---|---|
 | `USUARIO_EMERCARTO` | Usuario para autenticarte en el servicio SOAP. |
 | `PASSWORD_EMERCARTO` | Contraseña de ese usuario. |
-| `WSDL_URL` | Dirección del WSDL del servicio SOAP. El ejemplo incluye una dirección; confirma que es la correspondiente a tu entorno. |
 | `MQTT_HOST` | Nombre de host o dirección del broker MQTT. |
 | `MQTT_PORT` | Puerto del broker MQTT, como número entero. |
 | `MQTT_TOPIC` | Topic al que se suscribirá el cliente. |
 | `USUARIO_MQTT` | Usuario para autenticarte en el broker. |
 | `PASSWORD_MQTT` | Contraseña de ese usuario. |
 | `VENTANA_SEGUNDOS` | Antigüedad máxima admitida para una posición, en segundos. |
-| `MARGEN_FUTURO_SEGUNDOS` | Margen permitido para timestamps ligeramente futuros, en segundos. |
 
 El ejemplo trae `VENTANA_SEGUNDOS = 1 * 60` (un minuto) y
 `MARGEN_FUTURO_SEGUNDOS = 60` (un minuto). Ajusta esos valores a tus necesidades.
