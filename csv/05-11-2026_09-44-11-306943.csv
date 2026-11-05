@@ -1,3 +1,0 @@
-from,sender,latitud,longitud,id,ruta,SNR,RSSI,hora_creación,hora_llegada
-TAG1,TAG1,40.4348891,-3.6713868,251575478,TAG1,0.0,,09:44:15,09:44:15
-TAG4,TAG1,40.4352188,-3.6693456,3450651346,TAG4 --> TAG1,6.0,0,09:44:20,09:44:20
