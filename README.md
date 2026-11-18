@@ -3,6 +3,22 @@
 Este script recibe mensajes de posición por MQTT, los valida, los registra y
 envía las posiciones válidas al servicio EMERCARTO mediante SOAP.
 
+## Organización del código
+
+El programa está dividido por responsabilidades. `main.py` configura e inicia
+el servicio; el resto de los módulos contienen la lógica de cada parte:
+
+| Archivo | Responsabilidad |
+|---|---|
+| `mqtt_handlers.py` | Gestionar la conexión MQTT y procesar los mensajes recibidos. |
+| `soap.py` | Crear el cliente SOAP para comunicarse con EMERCARTO. |
+| `trama.py` | Validar los datos de posición y construir la trama SOAP. |
+| `paquetes.py` | Validar la antigüedad y evitar el reprocesamiento de paquetes. |
+| `csv_file.py` | Crear el CSV de la ejecución y añadir filas. |
+| `nodos.py` | Relacionar los identificadores de los nodos con sus nombres. |
+| `logger.py` | Configurar el registro en consola y en el archivo de log. |
+| `config.py` | Guardar las credenciales y los parámetros de conexión. |
+
 ## Requisitos
 
 - Python 3.11 o posterior.
@@ -12,7 +28,9 @@ envía las posiciones válidas al servicio EMERCARTO mediante SOAP.
 ## Instalación
 
 Las dependencias externas están listadas en `requirements.txt` (`zeep`,
-`requests`, `paho-mqtt` 2.0 o posterior y `tzdata`). `csv`, `pathlib`,
+`requests`, `paho-mqtt` 1.6.1 o posterior y `tzdata`). Con Paho 2 se utiliza
+la API de callbacks versión 2; con Paho 1 se mantiene compatibilidad con la
+API heredada. `csv`, `pathlib`,
 `datetime` y `zoneinfo` forman parte de Python y no se instalan por separado.
 
 Abre una terminal en la carpeta del proyecto e instala las dependencias:
@@ -43,7 +61,7 @@ python -m pip install -r requirements.txt
 El ejemplo trae `VENTANA_SEGUNDOS = 1 * 60` (un minuto) y
 `MARGEN_FUTURO_SEGUNDOS = 60` (un minuto). Ajusta esos valores a tus necesidades.
 
-El diccionario `NODOS` de `main.py` relaciona el valor numérico `from` de cada
+El diccionario `NODOS` de `nodos.py` relaciona el valor numérico `from` de cada
 nodo con el nombre que usa el proyecto (por ejemplo, `TAG1`). Actualízalo si
 cambian los identificadores de los dispositivos. Los nombres se utilizan en
 los logs, la ruta y el CSV.
