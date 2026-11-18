@@ -2,5 +2,6 @@
 config.py
 mqtt_positions.log
 .env
-__pycache__
+__pycache__/
+*.py[cod]
 /csv
